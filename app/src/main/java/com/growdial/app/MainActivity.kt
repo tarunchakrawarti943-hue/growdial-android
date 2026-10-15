@@ -11,6 +11,10 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
+import android.content.res.ColorStateList
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
@@ -29,7 +33,17 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
+import androidx.core.view.ViewCompat
+import org.json.JSONObject
+import org.json.JSONTokener
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -61,12 +75,45 @@ class MainActivity : AppCompatActivity() {
             "instagram.com", "facebook.com", "fb.me", "twitter.com", "x.com", "linkedin.com", "maps.google.com", "maps.app.goo.gl"
         )
         /** Pages where pull-to-refresh is off (they scroll inside, and a refresh would cut a live or a call). */
+        /** Pages that need the whole screen: no bottom tabs there (the top bar stays for "back"). */
+        val NO_TABS = listOf("live-room.php", "live-recording.php", "watch.php", "recording-watch.php")
+        val BRAND: Int = 0xFF4F46E5.toInt()
+        val MUTED: Int = 0xFF64748B.toInt()
+        val INK: Int = 0xFF0F172A.toInt()
         val NO_PULL = listOf("live-room.php", "go-live.php", "live-recording.php", "messages.php", "watch.php", "recording-watch.php")
     }
 
     private lateinit var web: WebView
     private lateinit var swipe: SwipeRefreshLayout
-    private lateinit var root: FrameLayout
+    private lateinit var root: LinearLayout
+    private lateinit var content: FrameLayout
+    // the app's own (native) parts around the website
+    private lateinit var topBar: LinearLayout
+    private lateinit var backBtn: ImageButton
+    private lateinit var titleView: TextView
+    private lateinit var bellBox: FrameLayout
+    private lateinit var bellBadge: TextView
+    private lateinit var progress: ProgressBar
+    private lateinit var bottomBar: LinearLayout
+    private lateinit var skeleton: LinearLayout
+    private var skeletonPulse: ObjectAnimator? = null
+    private var role = "guest"
+    private var unread = 0
+    private var committed = false
+    private var firstPage = true
+    private val ui = Handler(Looper.getMainLooper())
+    private val siteBase: String by lazy { Uri.parse(BuildConfig.SITE_URL).let { "${it.scheme}://${it.host}" } }
+
+    data class Tab(val label: String, val icon: Int, val path: String)
+
+    /** The bottom tabs for who is signed in (the page says it in <meta name="gd-role">). */
+    private fun tabsFor(r: String): List<Tab> = when (r) {
+        "student" -> listOf(Tab("Home", R.drawable.ic_home, "/"), Tab("Courses", R.drawable.ic_book, "/courses.php"), Tab("Live", R.drawable.ic_live, "/live.php"), Tab("Wallet", R.drawable.ic_wallet, "/student/wallet.php"), Tab("Me", R.drawable.ic_user, "/student/dashboard.php"))
+        "teacher" -> listOf(Tab("Home", R.drawable.ic_grid, "/teacher/dashboard.php"), Tab("Go Live", R.drawable.ic_video, "/teacher/go-live.php"), Tab("Students", R.drawable.ic_users, "/teacher/students.php"), Tab("Earnings", R.drawable.ic_money, "/teacher/earnings.php"), Tab("Messages", R.drawable.ic_chat, "/messages.php"))
+        "admin" -> listOf(Tab("Home", R.drawable.ic_grid, "/admin/dashboard.php"), Tab("Users", R.drawable.ic_users, "/admin/users.php"), Tab("Live", R.drawable.ic_live, "/admin/live.php"), Tab("Settings", R.drawable.ic_sliders, "/admin/settings.php"), Tab("Site", R.drawable.ic_home, "/"))
+        "manager" -> listOf(Tab("Home", R.drawable.ic_grid, "/manager/dashboard.php"), Tab("Site", R.drawable.ic_home, "/"), Tab("Live", R.drawable.ic_live, "/live.php"))
+        else -> listOf(Tab("Home", R.drawable.ic_home, "/"), Tab("Courses", R.drawable.ic_book, "/courses.php"), Tab("Live", R.drawable.ic_live, "/live.php"), Tab("Login", R.drawable.ic_login, "/login.php"))
+    }
     private val siteHost: String by lazy { (Uri.parse(BuildConfig.SITE_URL).host ?: "growdial.com").removePrefix("www.") }
 
     private var fileCallback: ValueCallback<Array<Uri>>? = null
@@ -115,11 +162,35 @@ class MainActivity : AppCompatActivity() {
         }
         if (SECURE) window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
 
-        root = FrameLayout(this)
+        // ---- screen: [top bar] [thin progress line] [website + loading skeleton] [bottom tabs]
+        WindowCompat.setDecorFitsSystemWindows(window, false)   // we place the bars ourselves (Android 15 draws edge to edge)
+        window.statusBarColor = Color.WHITE
+        window.navigationBarColor = Color.WHITE
+        WindowCompat.getInsetsController(window, window.decorView).apply { isAppearanceLightStatusBars = true; isAppearanceLightNavigationBars = true }
+        root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE) }
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            v.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
+            WindowInsetsCompat.CONSUMED
+        }
+        buildTopBar()
+        progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100; isIndeterminate = false; progressTintList = ColorStateList.valueOf(BRAND); progressBackgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT); visibility = View.INVISIBLE
+        }
+        root.addView(progress, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(3)).apply { topMargin = -dp(1); bottomMargin = -dp(2) })
+        content = FrameLayout(this)
         swipe = SwipeRefreshLayout(this)
         web = WebView(this)
         swipe.addView(web, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        root.addView(swipe, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        content.addView(swipe, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        buildSkeleton()
+        root.addView(content, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        bottomBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Color.WHITE); elevation = dp(8).toFloat(); gravity = Gravity.CENTER_VERTICAL
+        }
+        root.addView(bottomBar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
+        buildTabs()
         setContentView(root)
 
         swipe.setColorSchemeColors(Color.parseColor("#4F46E5"))
@@ -154,10 +225,27 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                 swipe.isEnabled = NO_PULL.none { url.contains(it) }
+                committed = false
+                progress.progress = 5; progress.visibility = View.VISIBLE
+                ui.postDelayed({ if (!committed) showSkeleton(true) }, 280)   // only for slow pages: fast ones never flash it
+                updateChrome(url)
             }
+
+            override fun onPageCommitVisible(view: WebView, url: String) {
+                committed = true
+                showSkeleton(false)
+                if (!firstPage) { web.alpha = 0.55f; web.animate().alpha(1f).setDuration(180).start() }   // a soft fade between pages
+                firstPage = false
+            }
+
+            override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) { updateChrome(url) }
 
             override fun onPageFinished(view: WebView, url: String) {
                 pageReady = true
+                committed = true; showSkeleton(false)
+                progress.visibility = View.INVISIBLE
+                readPageInfo()
+                updateChrome(url)
                 swipe.isRefreshing = false
                 CookieManager.getInstance().flush()
             }
@@ -173,6 +261,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         web.webChromeClient = object : WebChromeClient() {
+            override fun onProgressChanged(view: WebView, newProgress: Int) {
+                progress.progress = newProgress
+                if (newProgress >= 100) progress.visibility = View.INVISIBLE
+            }
+
+            override fun onReceivedTitle(view: WebView, title: String?) { setTitleFrom(title) }
+
             override fun onPermissionRequest(request: PermissionRequest) {
                 runOnUiThread {
                     val host = request.origin.host ?: ""
@@ -210,8 +305,9 @@ class MainActivity : AppCompatActivity() {
             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
                 if (customView != null) { callback.onCustomViewHidden(); return }
                 customView = view; customCallback = callback
-                root.addView(view, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-                swipe.visibility = View.GONE
+                swipe.visibility = View.GONE; topBar.visibility = View.GONE; bottomBar.visibility = View.GONE; progress.visibility = View.GONE
+                (customView?.parent as? ViewGroup)?.removeView(customView)
+                content.addView(customView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 WindowCompat.getInsetsController(window, window.decorView).apply {
                     hide(WindowInsetsCompat.Type.systemBars())
                     systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -341,10 +437,126 @@ class MainActivity : AppCompatActivity() {
 
     private fun exitFullscreen() {
         val v = customView ?: return
-        root.removeView(v); customView = null
-        swipe.visibility = View.VISIBLE
+        content.removeView(v); customView = null
+        swipe.visibility = View.VISIBLE; topBar.visibility = View.VISIBLE; progress.visibility = View.INVISIBLE
+        updateChrome(web.url ?: "")
         customCallback?.onCustomViewHidden(); customCallback = null
         WindowCompat.getInsetsController(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
+    }
+
+    // ----------------------------------------------------------------- the native top bar, bottom tabs and loading skeleton
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun iconButton(icon: Int, desc: String): ImageButton = ImageButton(this).apply {
+        setImageResource(icon); imageTintList = ColorStateList.valueOf(INK); contentDescription = desc
+        background = null; scaleType = ImageView.ScaleType.CENTER
+        val tv = android.util.TypedValue(); context.theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, tv, true); setBackgroundResource(tv.resourceId)
+    }
+
+    private fun buildTopBar() {
+        topBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setBackgroundColor(Color.WHITE); elevation = dp(2).toFloat(); setPadding(dp(4), 0, dp(4), 0) }
+        backBtn = iconButton(R.drawable.ic_back, "Back").apply { setOnClickListener { performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY); if (web.canGoBack()) web.goBack() } }
+        titleView = TextView(this).apply { textSize = 17f; setTextColor(INK); typeface = android.graphics.Typeface.DEFAULT_BOLD; maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; text = getString(R.string.app_name); setPadding(dp(8), 0, dp(4), 0) }
+        bellBox = FrameLayout(this)
+        val bell = iconButton(R.drawable.ic_bell, "Notifications").apply { setOnClickListener { performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY); web.loadUrl("$siteBase/notifications.php") } }
+        bellBadge = TextView(this).apply {
+            textSize = 10f; setTextColor(Color.WHITE); typeface = android.graphics.Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER; minWidth = dp(17); setPadding(dp(4), 0, dp(4), 0)
+            background = GradientDrawable().apply { setColor(0xFFDC2626.toInt()); cornerRadius = dp(9).toFloat() }; visibility = View.GONE
+        }
+        bellBox.addView(bell, FrameLayout.LayoutParams(dp(44), dp(44)))
+        bellBox.addView(bellBadge, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, dp(17), Gravity.TOP or Gravity.END).apply { topMargin = dp(5); rightMargin = dp(3) })
+        val share = iconButton(R.drawable.ic_share, "Share").apply {
+            setOnClickListener {
+                val u = web.url ?: return@setOnClickListener
+                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "${titleView.text}\n$u"), "Share"))
+            }
+        }
+        topBar.addView(backBtn, LinearLayout.LayoutParams(dp(44), dp(44)))
+        topBar.addView(titleView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        topBar.addView(bellBox, LinearLayout.LayoutParams(dp(44), dp(44)))
+        topBar.addView(share, LinearLayout.LayoutParams(dp(44), dp(44)))
+        root.addView(topBar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54)))
+    }
+
+    private fun buildTabs() {
+        bottomBar.removeAllViews()
+        for (t in tabsFor(role)) {
+            val cell = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; tag = t.path; contentDescription = t.label
+                val tv = android.util.TypedValue(); context.theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, tv, true); setBackgroundResource(tv.resourceId)
+                setOnClickListener { performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY); web.loadUrl(siteBase + t.path) }
+            }
+            cell.addView(ImageView(this).apply { setImageResource(t.icon); tag = "icon" }, LinearLayout.LayoutParams(dp(24), dp(24)))
+            cell.addView(TextView(this).apply { text = t.label; textSize = 11f; tag = "label"; gravity = Gravity.CENTER; setPadding(0, dp(3), 0, 0) })
+            bottomBar.addView(cell, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+        }
+        updateChrome(web.url ?: "")
+    }
+
+    private fun pathOf(url: String): String { val p = Uri.parse(url).path ?: "/"; return if (p == "" || p == "/index.php") "/" else p }
+
+    /** Back arrow, the active tab and whether the tabs show — after every page change. */
+    private fun updateChrome(url: String) {
+        if (!::bottomBar.isInitialized || customView != null) return
+        val path = pathOf(url)
+        val tabs = tabsFor(role)
+        val isRoot = tabs.any { it.path == path }
+        backBtn.visibility = if (!isRoot && web.canGoBack()) View.VISIBLE else View.GONE
+        titleView.setPadding(if (backBtn.visibility == View.VISIBLE) dp(4) else dp(12), 0, dp(4), 0)
+        bottomBar.visibility = if (NO_TABS.any { url.contains(it) }) View.GONE else View.VISIBLE
+        for (i in 0 until bottomBar.childCount) {
+            val cell = bottomBar.getChildAt(i) as LinearLayout
+            val on = cell.tag == path
+            val color = if (on) BRAND else MUTED
+            (cell.findViewWithTag<ImageView>("icon"))?.imageTintList = ColorStateList.valueOf(color)
+            (cell.findViewWithTag<TextView>("label"))?.apply { setTextColor(color); typeface = if (on) android.graphics.Typeface.DEFAULT_BOLD else android.graphics.Typeface.DEFAULT }
+        }
+        bellBox.visibility = if (role == "guest") View.GONE else View.VISIBLE
+    }
+
+    private fun setTitleFrom(t: String?) {
+        var x = (t ?: "").trim()
+        for (sep in listOf(" — ", " | ", " · ", " - ")) { val i = x.indexOf(sep); if (i > 0) x = x.substring(0, i) }
+        titleView.text = if (x.isBlank() || x.startsWith("http")) getString(R.string.app_name) else x
+    }
+
+    /** Who is signed in + unread notifications, from the page's <meta> tags (printed only inside the app). */
+    private fun readPageInfo() {
+        val js = "(function(){var r=document.querySelector('meta[name=gd-role]'),u=document.querySelector('meta[name=gd-unread]');return JSON.stringify({role:r?r.content:'',unread:u?+u.content:0});})()"
+        web.evaluateJavascript(js) { raw ->
+            try {
+                val o = JSONObject(JSONTokener(raw).nextValue() as String)
+                val r = o.optString("role", "")
+                if (r.isNotEmpty() && r != role) { role = r; buildTabs() }
+                unread = o.optInt("unread", 0)
+                bellBadge.text = if (unread > 99) "99+" else unread.toString()
+                bellBadge.visibility = if (unread > 0) View.VISIBLE else View.GONE
+                updateChrome(web.url ?: "")
+            } catch (e: Exception) { }
+        }
+    }
+
+    private fun buildSkeleton() {
+        skeleton = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE); setPadding(dp(16), dp(16), dp(16), dp(16)); visibility = View.GONE; isClickable = true }
+        fun block(h: Int, widthPct: Float = 1f, top: Int = 12) {
+            val v = View(this).apply { background = GradientDrawable().apply { setColor(0xFFEEF1F6.toInt()); cornerRadius = dp(12).toFloat() } }
+            val lp = LinearLayout.LayoutParams((resources.displayMetrics.widthPixels * widthPct).toInt() - dp(32), dp(h)).apply { topMargin = dp(top) }
+            skeleton.addView(v, lp)
+        }
+        block(22, 0.55f, 0); block(160); block(16, 0.9f, 16); block(16, 0.7f, 8); block(96, 1f, 16); block(16, 0.8f, 16); block(16, 0.6f, 8); block(96, 1f, 16)
+        content.addView(skeleton, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun showSkeleton(on: Boolean) {
+        if (!::skeleton.isInitialized) return
+        if (on) {
+            if (skeleton.visibility == View.VISIBLE) return
+            skeleton.alpha = 1f; skeleton.visibility = View.VISIBLE
+            skeletonPulse = ObjectAnimator.ofFloat(skeleton, "alpha", 1f, 0.55f).apply { duration = 700; repeatMode = ValueAnimator.REVERSE; repeatCount = ValueAnimator.INFINITE; start() }
+        } else if (skeleton.visibility == View.VISIBLE) {
+            skeletonPulse?.cancel(); skeletonPulse = null
+            skeleton.animate().alpha(0f).setDuration(150).withEndAction { skeleton.visibility = View.GONE; skeleton.alpha = 1f }.start()
+        }
     }
 
     /** window.GrowdialApp in the page. */
