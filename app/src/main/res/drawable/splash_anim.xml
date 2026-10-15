@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Animated start screen (Android 12+): the dial's arc draws itself, the needle swings up, the centre dot pops.
+     Older phones show the same picture without movement. -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt">
+    <aapt:attr name="android:drawable">
+        <vector android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+            <group android:translateX="30" android:translateY="30">
+                <path android:name="arc" android:strokeColor="#FFFFFF" android:strokeWidth="4.6" android:strokeLineCap="round"
+                    android:fillColor="#00000000" android:trimPathEnd="0" android:pathData="M9.6,33.2a16,16 0,1 1,28.8 0" />
+                <group android:name="needle" android:pivotX="24" android:pivotY="33.2" android:rotation="-95">
+                    <path android:strokeColor="#FFFFFF" android:strokeWidth="4.6" android:strokeLineCap="round"
+                        android:fillColor="#00000000" android:pathData="M24,33.2 L32.4,19.2" />
+                </group>
+                <group android:name="dot" android:pivotX="24" android:pivotY="33.2" android:scaleX="0" android:scaleY="0">
+                    <path android:fillColor="#FFFFFF" android:pathData="M20.2,33.2a3.8,3.8 0,1 1,7.6 0a3.8,3.8 0,1 1,-7.6 0" />
+                </group>
+            </group>
+        </vector>
+    </aapt:attr>
+    <target android:name="arc">
+        <aapt:attr name="android:animation">
+            <objectAnimator android:propertyName="trimPathEnd" android:valueFrom="0" android:valueTo="1"
+                android:duration="520" android:interpolator="@android:interpolator/fast_out_slow_in" />
+        </aapt:attr>
+    </target>
+    <target android:name="dot">
+        <aapt:attr name="android:animation">
+            <set>
+                <objectAnimator android:propertyName="scaleX" android:valueFrom="0" android:valueTo="1" android:startOffset="380"
+                    android:duration="260" android:interpolator="@android:interpolator/overshoot" />
+                <objectAnimator android:propertyName="scaleY" android:valueFrom="0" android:valueTo="1" android:startOffset="380"
+                    android:duration="260" android:interpolator="@android:interpolator/overshoot" />
+            </set>
+        </aapt:attr>
+    </target>
+    <target android:name="needle">
+        <aapt:attr name="android:animation">
+            <objectAnimator android:propertyName="rotation" android:valueFrom="-95" android:valueTo="0" android:startOffset="300"
+                android:duration="560" android:interpolator="@android:interpolator/overshoot" />
+        </aapt:attr>
+    </target>
+</animated-vector>

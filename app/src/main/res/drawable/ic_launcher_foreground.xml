@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- the Growdial "dial" mark (as on the website), white, centred in the icon's safe zone -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:translateX="30" android:translateY="30">
+        <path android:strokeColor="#FFFFFF" android:strokeWidth="4.6" android:strokeLineCap="round" android:fillColor="#00000000"
+            android:pathData="M9.6,33.2a16,16 0,1 1,28.8 0" />
+        <path android:strokeColor="#FFFFFF" android:strokeWidth="4.6" android:strokeLineCap="round" android:fillColor="#00000000"
+            android:pathData="M24,33.2 L32.4,19.2" />
+        <path android:fillColor="#FFFFFF" android:pathData="M20.2,33.2a3.8,3.8 0,1 1,7.6 0a3.8,3.8 0,1 1,-7.6 0" />
+    </group>
+</vector>
